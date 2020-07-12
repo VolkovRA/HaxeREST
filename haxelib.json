@@ -1,0 +1,11 @@
+{
+	"name": "rest",
+	"url": "https://github.com/VolkovRA/HaxePUI/blob/master/README.md",
+	"license": "MIT",
+	"tags": ["rest", "net", "api", "http", "https", "js", "nodejs", "json"],
+	"description": "The REST API Server for NodeJS",
+	"version": "1.0.0",
+	"releasenote": "Release",
+	"contributors": ["VolkovRA"],
+	"classPath": "lib"
+}
