@@ -66,10 +66,8 @@ import js.node.events.EventEmitter.Event;
 
     /**
      * Цикл обновления кеша завершён.
-     * 
-     * Событие содержит текущий размер кеша в байтах. (Всего)
      */
-    var UPDATE_END:CacheEvent<Int->Void> = "cacheUpdateEnd";
+    var UPDATE_END:CacheEvent<Void->Void> = "cacheUpdateEnd";
 
     /**
      * Ошибка кеша.

@@ -156,7 +156,26 @@ class Cache extends EventEmitter<Cache>
     public inline function get(name:String):CacheFile {
         return files[name];
     }
-    
+
+    /**
+     * Подсчитать общий объём всех файлов в кеше. (Байт)
+     * 
+     * Возвращает количество байт, занимаемых всем файлами
+     * в кеше на момент вызова.
+     * 
+     * @return Объём кеша. (Байт)
+     */
+    public function getSize():Int {
+        var key:String = null;
+        var bytes = 0;
+        Syntax.code('for ({0} in {1}) {', key, files); // for in
+            var file = files[key];
+            if (file != null && file.data != null)
+                bytes += file.data.length;
+        Syntax.code('}'); // for end
+        return bytes;
+    }
+
     /**
      * Очистить кеш.
      * - Удаляет все файлы, находящиеся в кеше.
@@ -252,19 +271,16 @@ class Cache extends EventEmitter<Cache>
 
         // Кеширование завершено:
         if (upd == 0) {
-            var bytes:Int = 0;
             var arr = new Array<CacheFile>();
 
             // Удаление старых файлов из кеша:
             for (file in files) {
-                if (file.age == age) {
-                    bytes += file.data.length;
-                }
-                else {
-                    Utils.delete(files[file.path]);
-                    arr.push(file);
-                    count --;
-                }
+                if (file.age == age)
+                    continue;
+                
+                Utils.delete(files[file.path]);
+                arr.push(file);
+                count --;
             }
 
             // События:
@@ -274,7 +290,7 @@ class Cache extends EventEmitter<Cache>
 
             // Завершение:
             if (age == cage)
-                emit(CacheEvent.UPDATE_END, bytes);
+                emit(CacheEvent.UPDATE_END);
         }
     }
 
@@ -289,9 +305,9 @@ class Cache extends EventEmitter<Cache>
             
             // Если путь был удалён или нет прав - просто выводим предупреждение:
             if (err != null) {
-                checkComplete(cage);
                 err.message = "Error reading file system\n" + err.message;
                 emit(CacheEvent.ERROR, err);
+                checkComplete(cage);
                 return;
             }
             
@@ -306,9 +322,9 @@ class Cache extends EventEmitter<Cache>
                     
                     // Ошибка:
                     if (err != null) {
-                        checkComplete(cage);
                         err.message = "Error reading file\n" + err.message;
                         emit(CacheEvent.ERROR, err);
+                        checkComplete(cage);
                         return;
                     }
                     
@@ -344,16 +360,16 @@ class Cache extends EventEmitter<Cache>
                                 
                                 // Ошибка:
                                 if (err != null) {
-                                    checkComplete(cage);
                                     err.message = "File Compression Error\n" + err.message;
                                     emit(CacheEvent.ERROR, err);
+                                    checkComplete(cage);
                                     return;
                                 }
                                 
                                 file.data = buffer;
                                 file.isCompressed = true;
-                                checkComplete(cage);
                                 emit(CacheEvent.FILE_COMPRESS, file);
+                                checkComplete(cage);
                             });
                         }
 
@@ -387,16 +403,16 @@ class Cache extends EventEmitter<Cache>
                                 
                                 // Ошибка:
                                 if (err != null) {
-                                    checkComplete(cage);
                                     err.message = "File Compression Error\n" + err.message;
                                     emit(CacheEvent.ERROR, err);
+                                    checkComplete(cage);
                                     return;
                                 }
                                 
                                 file.data = buffer;
                                 file.isCompressed = true;
-                                checkComplete(cage);
                                 emit(CacheEvent.FILE_COMPRESS, file);
+                                checkComplete(cage);
                             });
                         }
 
@@ -424,9 +440,9 @@ class Cache extends EventEmitter<Cache>
                     
                     // Ошибка:
                     if (err != null) {
-                        checkComplete(cage);
                         err.message = "Folder read error\n" + err.message;
                         emit(CacheEvent.ERROR, err);
+                        checkComplete(cage);
                         return;
                     }
                     
@@ -438,9 +454,9 @@ class Cache extends EventEmitter<Cache>
                         watchers.push(watcher);
                     }
                     catch (err:Error) {
-                        checkComplete(cage);
                         err.message = "Failed to add listening of directory changes:\n" + err.message;
                         emit(CacheEvent.ERROR, err);
+                        checkComplete(cage);
                         return;
                     }
                     

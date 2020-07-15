@@ -18,19 +18,28 @@ import js.node.net.Socket;
 /**
  * Сервер REST API.
  * 
- * Одновременно может быть запущен только http или https web сервер.
- * Для запуска на обеих протоколах - создайте второй экземпляр.
+ * 1. Одновременно может быть запущен только http или https web сервер.
+ * 2. Для запуска на обеих протоколах создайте второй экземпляр.
+ * 3. Каждый экземпляр `Server` является **одноразовым** и не может быть
+ *    повторного использован для запуска. (Из-за особенностей API NodeJS)
  * 
  * События:
- *   - `ServerEvent.SERVER_REQUEST` Получен новый запрос.
- *   - `ServerEvent.SERVER_START` Сервер запущен.
- *   - `ServerEvent.SERVER_DOWN` Сервер завершил свою работу.
- *   - `ServerEvent.SERVER_ERROR` Ошибка сервера. (Приложение не падает)
+ * - `ServerEvent.REQUEST` Получен новый запрос.
+ * - `ServerEvent.ONLINE` Сервер API запущен.
+ * - `ServerEvent.OFFLINE` Сервер API отключен.
+ * - `ServerEvent.START_ERROR` Ошибка запуска сервера API.
  */
 @:allow(rest.server.Request)
 class Server extends EventEmitter<Server>
 {
+    static private inline var STATE_OFFLINE     = 0; // Выключен.
+    static private inline var STATE_STARTING    = 1; // Запускается.
+    static private inline var STATE_ONLINE      = 2; // Запущен.
+    static private inline var STATE_CLOSING     = 3; // Выключается.
+    static private inline var STATE_CLOSED      = 4; // Выключен навсегда.
+
     private var srv:Dynamic = null;
+    private var state:Int = STATE_OFFLINE;
 
     /**
      * Создать сервер REST API.
@@ -44,6 +53,18 @@ class Server extends EventEmitter<Server>
     //////////////////
     //   СВОЙСТВА   //
     //////////////////
+
+    /**
+     * Сервер запущен.
+     * - Если `true` - сервер запущен и готов принимать входящие соединения.
+     * - Если `false` - сервер не запущен или не готов принимать входящие соединения, если закрывается.
+     * 
+     * По умолчанию: `false`
+     */
+    public var online(get, never):Bool;
+    inline function get_online():Bool {
+        return state == STATE_ONLINE;
+    }
 
     /**
      * Карта методов API.
@@ -93,7 +114,7 @@ class Server extends EventEmitter<Server>
      * 
      * По умолчанию: `Haxe REST API (NodeJS)`
      */
-    public var serverName:String = "Haxe REST API (NodeJS)";
+    public var name:String = "Haxe REST API (NodeJS)";
 
     /**
      * Имя индексного файла.
@@ -106,7 +127,7 @@ class Server extends EventEmitter<Server>
      * 
      * По умолчанию: 'index.html'
      */
-    public var indexFileName:String = "index.html";
+    public var indexFile:String = "index.html";
 
     /**
      * Значение заголовка `Cache-Control` для **статического** контента.
@@ -129,21 +150,29 @@ class Server extends EventEmitter<Server>
      * @param params Параметры запуска.
      */
      public function startHttp(params:ServerHttpParams):Void {
+        if (state > STATE_OFFLINE) {
+            emit(ServerEvent.START_ERROR, new Error("This Server instance was already running"));
+            return;
+        }
+
+        state = STATE_STARTING;
+
         try {
             var http = Http.createServer();
             http.timeout = Utils.nvl(params.timeout, 10000);
             http.maxHeadersCount = Utils.nvl(params.maxHeadersCount, 50);
-            http.addListener("request", onRequest);
-            http.addListener("clientError", onClientError);
-            http.addListener("close", onDown);
-            http.addListener("error", onError); //<-- Недокументированное событие, можно словить при попытке запуска на занятом порту!
+            http.on("request", onRequest);
+            http.on("clientError", onClientError);
+            http.on("close", onClosed);
+            http.on("error", onError); //<-- Недокументированное событие, можно словить при попытке запуска на занятом порту!
             http.listen(params.port, params.host, onStart);
             srv = http;
             isHttps = false;
         }
         catch (err:Error) {
+            state = STATE_CLOSED;
             err.message = "Error start http rest api server\n" + err.message;
-            emit(ServerEvent.SERVER_ERROR, err);
+            emit(ServerEvent.START_ERROR, err);
         }
     }
 
@@ -152,21 +181,49 @@ class Server extends EventEmitter<Server>
      * @param params Параметры запуска.
      */
     public function startHttps(params:ServerHttpsParams):Void {
+        if (state > STATE_OFFLINE) {
+            emit(ServerEvent.START_ERROR, new Error("This Server instance was already running"));
+            return;
+        }
+
+        state = STATE_STARTING;
+
         try {
             var https = Https.createServer(params.ssl);
             https.timeout = Utils.nvl(params.timeout, 10000);
             https.maxHeadersCount = Utils.nvl(params.maxHeadersCount, 50);
-            https.addListener("request", onRequest);
-            https.addListener("clientError", onClientError);
-            https.addListener("close", onDown);
-            https.addListener("error", onError); //<-- Недокументированное событие, можно словить при попытке запуска на занятом порту!
+            https.on("request", onRequest);
+            https.on("clientError", onClientError);
+            https.on("close", onClosed);
+            https.on("error", onError); //<-- Недокументированное событие, можно словить при попытке запуска на занятом порту!
             https.listen(params.port, params.host, onStart);
             srv = https;
             isHttps = true;
         }
         catch (err:Error) {
+            state = STATE_CLOSED;
             err.message = "Error start https rest api server\n" + err.message;
-            emit(ServerEvent.SERVER_ERROR, err);
+            emit(ServerEvent.START_ERROR, err);
+        }
+    }
+
+    /**
+     * Закрыть сервер.
+     * - Вызов игнорируется, если сервер не был запущен или уже остановлен.
+     * - Этот вызов асинхронный, ждите событие: `ServerEvent.OFFLINE`.
+     * - Этот вызов запрещает принимать новые соединения, но ожидает
+     *   завершения обработки уже открытых.
+     */
+    public function close():Void {
+        if (state == STATE_STARTING) {
+            state = STATE_CLOSING; // <-- Сможем закрыть только после запуска!
+            return;
+        }
+        if (state == STATE_ONLINE) {
+            state = STATE_CLOSING;
+            srv.close(onClosed);
+            emit(ServerEvent.OFFLINE, null);
+            return;
         }
     }
 
@@ -196,15 +253,41 @@ class Server extends EventEmitter<Server>
     ///////////////////
 
     private function onStart():Void {
-        emit(ServerEvent.SERVER_START);
+        if (state == STATE_STARTING) { // <-- Нормальное выполнение
+            state = STATE_ONLINE;
+            emit(ServerEvent.ONLINE);
+            return;
+        }
+        if (state == STATE_CLOSING) { // <-- Вызвали close() до фактического запуска, выключаем
+            emit(ServerEvent.START_ERROR, new Error("Server start canceled"));
+            srv.close(onClosed);
+            return;
+        }
     }
 
     private function onError(err:Error):Void {
-        emit(ServerEvent.SERVER_ERROR, err);
+        if (state == STATE_STARTING) { // <-- Если порт занят, мужет пульнуть
+            state = STATE_CLOSED;
+            emit(ServerEvent.START_ERROR, err);
+            return;
+        }
+        if (state == STATE_ONLINE) { // <-- На тот случай, если могут быть другие срабатывания
+            state = STATE_CLOSED;
+            emit(ServerEvent.OFFLINE, err);
+            return;
+        }
     }
 
-    private function onDown():Void {
-        emit(ServerEvent.SERVER_DOWN);
+    private function onClosed(err:Error):Void {
+        if (state == STATE_ONLINE) {
+            state = STATE_OFFLINE;
+            emit(ServerEvent.OFFLINE, err);
+            return;
+        }
+        if (state == STATE_CLOSING) {
+            state = STATE_CLOSED;
+            return;
+        }
     }
 
     private function onClientError(error:Error, socket:Socket):Void {
@@ -223,7 +306,7 @@ class Server extends EventEmitter<Server>
 
         // API Не задано:
         if (route == null) {
-            emit(ServerEvent.SERVER_REQUEST, req);
+            emit(ServerEvent.REQUEST, req);
             req.init(false);
             return;
         }
@@ -231,7 +314,7 @@ class Server extends EventEmitter<Server>
         // Метод не найден:
         req.api = route.api(msg.method, req.path);
         if (req.api == null) {
-            emit(ServerEvent.SERVER_REQUEST, req);
+            emit(ServerEvent.REQUEST, req);
             req.init(false);
             return;
         }
@@ -241,7 +324,7 @@ class Server extends EventEmitter<Server>
             req.query = Utils.readQueryFromURL(msg.url);
 
         // Загрузка тела:
-        emit(ServerEvent.SERVER_REQUEST, req);
+        emit(ServerEvent.REQUEST, req);
         req.init(!!req.api.body);
     }
 
@@ -292,7 +375,7 @@ class Server extends EventEmitter<Server>
      */
     public var send400:Request->Void = function(req) {
         req.res.statusCode = 400;
-        req.res.setHeader(HeaderName.SERVER, req.server.serverName);
+        req.res.setHeader(HeaderName.SERVER, req.server.name);
         req.res.setHeader(HeaderName.CACHE_CONTROL, CacheControl.NO_STORE);
         req.res.setHeader(HeaderName.CONTENT_TYPE, ContentType.TEXT);
         req.res.end("400 Bad Request");
@@ -318,7 +401,7 @@ class Server extends EventEmitter<Server>
      */
     public var send404:Request->Void = function(req) {
         req.res.statusCode = 404;
-        req.res.setHeader(HeaderName.SERVER, req.server.serverName);
+        req.res.setHeader(HeaderName.SERVER, req.server.name);
         req.res.setHeader(HeaderName.CACHE_CONTROL, CacheControl.NO_STORE);
         req.res.setHeader(HeaderName.CONTENT_TYPE, ContentType.TEXT);
         req.res.end("404 Not Found");
@@ -344,7 +427,7 @@ class Server extends EventEmitter<Server>
      */
     public var send413:Request->Void = function(req) {
         req.res.statusCode = 413;
-        req.res.setHeader(HeaderName.SERVER, req.server.serverName);
+        req.res.setHeader(HeaderName.SERVER, req.server.name);
         req.res.setHeader(HeaderName.CACHE_CONTROL, CacheControl.NO_STORE);
         req.res.setHeader(HeaderName.CONTENT_TYPE, ContentType.TEXT);
         req.res.end("413 Payload Too Large");
@@ -369,7 +452,7 @@ class Server extends EventEmitter<Server>
      */
     public var send500:Request->Void = function(req) {
         req.res.statusCode = 500;
-        req.res.setHeader(HeaderName.SERVER, req.server.serverName);
+        req.res.setHeader(HeaderName.SERVER, req.server.name);
         req.res.setHeader(HeaderName.CACHE_CONTROL, CacheControl.NO_STORE);
         req.res.setHeader(HeaderName.CONTENT_TYPE, ContentType.TEXT);
         req.res.end("500 Internal Server Error");
@@ -403,9 +486,9 @@ class Server extends EventEmitter<Server>
         var name = req.path.join(Path.sep);
         var file = req.server.content.get(name);
         if (file == null) {
-            file = req.server.content.get(name + req.server.indexFileName);
+            file = req.server.content.get(name + req.server.indexFile);
             if (file == null) {
-                file = req.server.content.get(name + Path.sep + req.server.indexFileName);
+                file = req.server.content.get(name + Path.sep + req.server.indexFile);
                 if (file == null) {
                     req.server.send404(req);
                     return;
@@ -418,7 +501,7 @@ class Server extends EventEmitter<Server>
         var v = req.msg.headers["if-none-match"];
         if (v != null && v == '"' + file.hash + '"') {
             req.res.statusCode = 304;
-            req.res.setHeader(HeaderName.SERVER, req.server.serverName);
+            req.res.setHeader(HeaderName.SERVER, req.server.name);
             req.res.setHeader(HeaderName.CACHE_CONTROL, req.server.cacheControl);
             req.res.setHeader(HeaderName.ETAG, '"' + file.hash + '"');
             req.res.end();
@@ -427,7 +510,7 @@ class Server extends EventEmitter<Server>
 
         // Отправка:
         req.res.statusCode = 200;
-        req.res.setHeader(HeaderName.SERVER, req.server.serverName);
+        req.res.setHeader(HeaderName.SERVER, req.server.name);
         req.res.setHeader(HeaderName.CACHE_CONTROL, req.server.cacheControl);
         req.res.setHeader(HeaderName.ETAG, '"' + file.hash + '"');
         req.res.setHeader(HeaderName.CONTENT_LENGTH, Std.string(file.data.length));
